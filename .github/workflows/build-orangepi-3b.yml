@@ -1,0 +1,288 @@
+#=====================================================================================
+# https://github.com/ophub/fnnas
+# Description: Build Orange Pi 3B FnNAS Image
+#=====================================================================================
+
+name: Build Orange Pi 3B Image
+
+on:
+  repository_dispatch:
+  workflow_dispatch:
+    inputs:
+      fnnas_base_version:
+        description: "Select fnnas base image version for Orange Pi 3B"
+        required: false
+        default: "rockchip_321"
+        type: choice
+        options:
+          - rockchip_330
+          - rockchip_321
+          - rockchip_296
+      fnnas_kernel:
+        description: "Select fnnas kernel version"
+        required: false
+        default: "6.1.y"
+        type: choice
+        options:
+          - 6.1.y
+          - 5.10.y
+          - 6.6.y
+      memory_config:
+        description: "Select Orange Pi 3B memory configuration"
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - all
+          - 2gb
+          - 4gb
+          - 8gb
+      storage_type:
+        description: "Select storage type for Orange Pi 3B"
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - all
+          - emmc
+          - nvme
+          - sdcard
+      auto_kernel:
+        description: "Auto use the latest kernel"
+        required: false
+        default: true
+        type: boolean
+      fnnas_storage:
+        description: "Set fnnas image releases tags"
+        required: false
+        default: "orangepi-3b"
+      fnnas_url:
+        description: "Custom fnnas image download url"
+        required: false
+        default: ""
+      builder_name:
+        description: "Set fnnas builder signature"
+        required: false
+        default: "ophub"
+        type: choice
+        options:
+          - ophub
+          - angel
+          - yourname
+
+env:
+  TZ: Etc/UTC
+
+jobs:
+  build-orangepi-3b:
+    runs-on: ubuntu-24.04
+    if: ${{ github.event.repository.owner.id }} == ${{ github.event.sender.id }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Initialization environment
+        id: init
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          docker rmi -f $(docker images -q) 2>/dev/null || true
+          [[ -n "${AGENT_TOOLSDIRECTORY}" ]] && sudo rm -rf "${AGENT_TOOLSDIRECTORY}"
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android 2>/dev/null
+          sudo swapoff -a
+          sudo rm -f /swapfile /mnt/swapfile
+          sudo -E apt-get -y update
+          sudo -E apt-get -y purge azure-cli ghc* zulu* llvm* firefox google* dotnet* powershell openjdk* mongodb* moby* || true
+          sudo -E apt-get -y install $(curl -fsSL https://ophub.org/ubuntu2404-make-fnnas-depends)
+          sudo -E systemctl daemon-reload
+          sudo -E apt-get -y autoremove --purge
+          sudo -E apt-get clean
+          sudo sed -i '/NVM_DIR/d;/skel/d' /root/{.bashrc,.profile}
+          sudo rm -rf ~/{.cargo,.dotnet,.rustup}
+          sudo -E timedatectl set-timezone "${TZ:-Etc/UTC}"
+          sudo -E ntpdate ntp.ubuntu.com 0.pool.ntp.org || true
+          sudo -E timedatectl set-ntp true
+          date -u
+          timedatectl status || true
+          echo "status=success" >> ${GITHUB_OUTPUT}
+
+      - name: Create simulated physical disk
+        run: |
+          mnt_size=$(expr $(df -h /mnt | tail -1 | awk '{print $4}' | sed 's/[[:alpha:]]//g' | sed 's/\..*//') - 1)
+          root_size=$(expr $(df -h / | tail -1 | awk '{print $4}' | sed 's/[[:alpha:]]//g' | sed 's/\..*//') - 4)
+          sudo truncate -s "${mnt_size}"G /mnt/mnt.img
+          sudo truncate -s "${root_size}"G /root.img
+          sudo losetup /dev/loop6 /mnt/mnt.img
+          sudo losetup /dev/loop7 /root.img
+          sudo pvcreate /dev/loop6
+          sudo pvcreate /dev/loop7
+          sudo vgcreate github /dev/loop6 /dev/loop7
+          sudo lvcreate -n runner -l 100%FREE github
+          sudo mkfs.xfs -f -i sparse=0 -b size=4096 /dev/github/runner
+          sudo mkdir -p /builder
+          sudo mount /dev/github/runner /builder
+          sudo chown -R runner:runner /builder
+          df -Th
+          echo "status=success" >> ${GITHUB_OUTPUT}
+
+      - name: Download fnnas image file
+        id: down
+        working-directory: /builder
+        if: (!cancelled())
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Create directory
+          [[ -d "fnnas" ]] || mkdir -p fnnas
+
+          input_url="${{ inputs.fnnas_url }}"
+          fnnas_base_version="${{ inputs.fnnas_base_version }}"
+
+          # -------------------------------------------------------
+          # Case A: URL specified
+          # -------------------------------------------------------
+          if [[ -n "${input_url}" ]]; then
+              echo "Custom URL detected: ${input_url}"
+
+              # Remove any parameters that may be included in the URL (?...)
+              clean_url="${input_url%%\?*}"
+
+              # Regex match GitHub Release URL format
+              # Format: https://github.com/<owner>/<repo>/releases/download/<tag>/<filename>
+              regex="github\.com/([^/]+)/([^/]+)/releases/download/([^/]+)/(.+)"
+
+              if [[ "${clean_url}" =~ $regex ]]; then
+                  # Extract information
+                  owner="${BASH_REMATCH[1]}"
+                  repo="${BASH_REMATCH[2]}"
+                  tag="${BASH_REMATCH[3]}"
+                  filename="${BASH_REMATCH[4]}"
+
+                  echo "Detected GitHub Release URL."
+                  echo "Repo: $owner/$repo | Tag: $tag | File: $filename"
+
+                  # Use gh cli to download
+                  gh release download "${tag}" \
+                      --repo "${owner}/${repo}" \
+                      --pattern "${filename}" \
+                      --dir "fnnas" \
+                      --clobber
+
+                  # Check download result
+                  if [[ -f "fnnas/${filename}" ]]; then
+                      echo "Download success via gh-cli."
+                      echo "status=success" >> ${GITHUB_OUTPUT}
+                      exit 0
+                  else
+                      echo "gh download failed."
+                      exit 1
+                  fi
+              else
+                  # If not a standard Release URL (e.g., API URL or third-party URL), fallback to curl
+                  echo "Using curl fallback..."
+                  latest_url="${input_url}"
+                  fnnas_filename=$(basename "${clean_url}")
+              fi
+
+          # -------------------------------------------------------
+          # Case B: Automatically fetch the latest version
+          # -------------------------------------------------------
+          else
+              echo "Auto-detecting latest release for Orange Pi 3B..."
+              latest_version=$(curl -s \
+                  -H "Accept: application/vnd.github+json" \
+                  -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+                  https://api.github.com/repos/ophub/fnnas/releases?per_page=20 | \
+                  jq -r --arg RTK "fnnas_base_image" \
+                  --arg BOARD "${fnnas_base_version}" \
+                  '[.[] | select(.tag_name | contains($RTK))] |
+                  map(.assets[] | select(.name | contains($BOARD) and endswith(".img.xz"))) |
+                  sort_by(.updated_at) |
+                  reverse |
+                  .[0] |
+                  {data: .updated_at, url: .url, name: .name}')
+
+              [[ -z "${latest_version}" || "${latest_version}" == "null" ]] && {
+                  echo "Invalid fnnas image file download address."
+                  exit 1
+              }
+
+              latest_url="$(echo ${latest_version} | jq -r '.url')"
+              fnnas_filename="$(echo ${latest_version} | jq -r '.name')"
+          fi
+
+          # -------------------------------------------------------
+          # Execute curl download (only if the above gh did not run)
+          # -------------------------------------------------------
+          echo "Downloading: ${fnnas_filename}"
+          echo "Source: ${latest_url}"
+
+          curl -fsSL \
+               -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+               -H "Accept: application/octet-stream" \
+               "${latest_url}" \
+               -o "fnnas/${fnnas_filename}"
+
+          [[ "${?}" -ne "0" ]] && echo "Download failed." && exit 1
+
+          fnnas_storage="${{ inputs.fnnas_storage }}"
+          [[ -n "${fnnas_storage}" ]] || fnnas_storage="orangepi-3b"
+          echo "build_tag=${fnnas_storage}" >> ${GITHUB_ENV}
+          ln -sf /builder/fnnas ${{ github.workspace }}/fnnas
+          ln -sf /builder/fnnas /home/runner/work/_actions/ophub/fnnas/main/fnnas
+
+          echo "status=success" >> ${GITHUB_OUTPUT}
+
+      - name: Build Orange Pi 3B with specific configurations
+        if: ${{ steps.down.outputs.status }} == 'success' && !cancelled()
+        uses: ophub/fnnas@main
+        with:
+          fnnas_path: fnnas/*.img.xz
+          fnnas_board: orangepi-3b
+          fnnas_kernel: ${{ inputs.fnnas_kernel }}
+          auto_kernel: ${{ inputs.auto_kernel }}
+          kernel_repo: ${{ inputs.kernel_repo }}
+          builder_name: ${{ inputs.builder_name }}
+
+      - name: Upload the packaged Orange Pi 3B image
+        uses: ncipollo/release-action@main
+        if: ${{ env.PACKAGED_STATUS }} == 'success' && !cancelled()
+        with:
+          tag: ${{ env.build_tag }}
+          artifacts: ${{ env.PACKAGED_OUTPUTPATH }}/*
+          allowUpdates: true
+          removeArtifacts: false
+          replacesArtifacts: true
+          makeLatest: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+          body: |
+            ## Orange Pi 3B FnNAS Image
+            - Board: Orange Pi 3B
+            - SoC: RK3566 (4x ARM Cortex-A55 @ 2.0GHz)
+            - Base Image: FnNAS ARM64
+            - Kernel: ${{ inputs.fnnas_kernel }}
+            - Builder: ${{ inputs.builder_name }}
+            
+            ### Hardware Support
+            - Memory: 2GB/4GB/8GB LPDDR4x
+            - Storage: eMMC (16GB-256GB), NVMe SSD, SATA SSD, microSD
+            - Network: 1GbE, WiFi 5, Bluetooth 5.0
+            - Display: HDMI 2.0, MIPI DSI
+            - USB: 2x USB 3.0, 2x USB 2.0
+            - GPIO: 40-pin header (compatible with Raspberry Pi)
+            
+            ### Build Configuration
+            - Memory Config: ${{ inputs.memory_config }}
+            - Storage Type: ${{ inputs.storage_type }}
+            - Auto Kernel: ${{ inputs.auto_kernel }}
+            
+            ### Documentation
+            - Build Guide: See ORANGEPI-3B-BUILD-GUIDE.md
+            - Deployment Guide: See ORANGEPI-3B-DEPLOYMENT-GUIDE.md
+            - Compatibility Report: See ORANGEPI-3B-COMPATIBILITY-REPORT.md
+            
+            ---
+            基于 fnnas.com 官方 Arm64 镜像构建，完整保留官方原版系统体验。
+            专为 Orange Pi 3B (RK3566) 平台优化的 FnNAS 系统镜像。
+            Extended support for Orange Pi 3B based on official FnNAS ARM64 release.
