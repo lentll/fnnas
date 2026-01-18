@@ -1,0 +1,4 @@
+verbosity=7
+fdtfile=rk3566-orangepi-3b.dtb
+overlays=spi-spidev
+extraargs=console=ttyS2,1500000 root=/dev/mmcblk0p2 rw rootwait

@@ -85,6 +85,7 @@ on:
           - orangepi-5-plus
           - orangepi-5b
           - orangepi-zero3
+          - orangepi-3b
           - panther-x2
           - photonicat
           - r66s
