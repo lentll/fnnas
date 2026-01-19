@@ -31,10 +31,12 @@ on:
       debs_version:
         description: "Set fnnas debs version"
         required: false
-        default: "6.12.y"
+        default: "6.1.y"
         type: choice
         options:
-          -5.10.y
+          - 5.10.y
+          - 5.15.y
+          - 6.1.y
           - 6.12.y
       debs_install:
         description: "Install kernel debs files"
