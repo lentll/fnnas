@@ -27,11 +27,11 @@ on:
       debs_repo:
         description: "Set fnnas debs repository"
         required: false
-        default: "ophub/fnnas"
+        default: "lentll/fnnas"
       debs_version:
         description: "Set fnnas debs version"
         required: false
-        default: "5.10.y"
+        default: "6.1.y"
         type: choice
         options:
           - 5.10.y
