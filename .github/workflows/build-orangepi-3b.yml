@@ -21,7 +21,7 @@ on:
       fnnas_kernel:
         description: "Select fnnas kernel version"
         required: false
-        default: "6.12.y"
+        default: "5.10.y"
         type: choice
         options:
           - 6.6.y
