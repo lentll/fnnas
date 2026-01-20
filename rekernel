@@ -49,9 +49,9 @@ tmp_image="${tmp_path}/tmp_image"
 [[ -d "${fnnas_dtbs}" ]] || mkdir -p "${fnnas_dtbs}"
 
 # Set the fnnas kernel debs files download repository from github.com
-debs_repo="https://github.com/ophub/fnnas"
-# Set the fnnas kernel debs version (e.g., 6.12.y)
-debs_version="6.12.y"
+debs_repo="https://github.com/lentll/fnnas"
+# Set the fnnas kernel debs version (e.g., 6.1.y)
+debs_version="6.1.y"
 # Installation of additional deb packages inside chroot(amlogic/allwinner/rockchip/none)
 debs_install="none"
 # By default, download and use dtbs files(true/yes)
@@ -154,7 +154,7 @@ init_var() {
     done
 
     # Adjust the custom kernel repository url format
-    [[ -z "${debs_repo}" ]] && debs_repo="ophub/fnnas"
+    [[ -z "${debs_repo}" ]] && debs_repo="lentll/fnnas"
     [[ "${debs_repo}" =~ ^https: ]] && debs_repo="$(echo ${debs_repo} | awk -F'/' '{print $4"/"$5}')"
     kernel_api="https://github.com/${debs_repo}"
 
